@@ -10,115 +10,181 @@ from dotenv import load_dotenv
 load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GEMINI_API_KEY}"
+class ChatHistoryRequest(BaseModel):
+    chat_history: Dict[str, str]  
+    current_text: str  
+class ConversationalResponse(BaseModel):
+    reply_text: str 
+class FlowchartRequest(BaseModel):
+    chat_history: Dict[str, str] 
+class FlowchartResponse(BaseModel):
+    updated_plan_json: Optional[str] = None
+    error: Optional[str] = None
+CONVERSATIONAL_SYSTEM_PROMPT = """
+You are "EventFlow," a friendly, professional, and detail-oriented event planning assistant.
 
-class ChatPart(BaseModel):
-    text: str
+YOUR ROLE:
+Your primary goal is to have a natural, engaging conversation with the user to gather ALL the necessary information needed to create a brilliant and detailed event plan. You should NOT generate any flowcharts or detailed plans yet - that comes later.
 
-class ChatMessage(BaseModel):
-    role: str
-    parts: List[ChatPart]
+WHAT YOU NEED TO GATHER:
+Through friendly conversation, you need to collect these key details:
+1. **Event Type**: What kind of event is it? (birthday, wedding, corporate, anniversary, etc.)
+2. **Event Description**: What's the occasion? Any special significance?
+3. **Target Date/Timeframe**: When is the event planned?
+4. **Guest Count**: Approximately how many people will attend?
+5. **Budget Range**: What's their budget (even a rough estimate)?
+6. **Venue Preference**: Home, rented venue, outdoor, restaurant, etc.?
+7. **Event Style/Vibe**: Casual, formal, themed, elegant, fun, etc.?
+8. **Special Requirements**: Dietary restrictions, accessibility needs, entertainment preferences, etc.
+9. **Priority Elements**: What matters most to them? (food, entertainment, decor, etc.)
 
-class ChatRequest(BaseModel):
-    chat_history: List[ChatMessage]
-    current_plan_json: Optional[str] = ""
+HOW TO INTERACT:
+- Be warm, enthusiastic, and encouraging
+- Ask 2-4 questions at a time (don't overwhelm them)
+- If they provide partial information, acknowledge it and ask follow-up questions
+- Offer suggestions and ideas when appropriate
+- Show excitement about their event
+- Use their responses to ask more targeted questions
+- If they're unsure about something, provide options or examples
 
-class ChatResponse(BaseModel):
-    reply_text: str
-    updated_plan_json: str
-
-SYSTEM_PROMPT = """
-You are "EventFlow," a world-class, detail-obsessed, and creative event planning expert. 
-Your goal is to act as a collaborative assistant. You will have a natural conversation with the user,
-ask clarifying questions, give suggestions, and help them build a complete event plan from scratch.
-
-CONTEXT:
-You will be given the user's entire `chat_history` and a `current_plan_json`.
-1.  **If `current_plan_json` is empty:** The user is new. Your first job is to be friendly, 
-    ask for the key details (event description, guest count, budget, date), and generate "Plan v1".
-2.  **If `current_plan_json` is NOT empty:** The user is in a "refinement loop". 
-    Their last message is feedback on the plan. Your job is to:
-    a) Understand their feedback (e.g., "add a DJ," "book the photographer first," "what are some theme ideas?").
-    b) Incorporate their changes into the plan.
-    c) If they ask for suggestions, add them to the `suggestions` field.
-    d) Generate an "updated_plan_json" (Plan v2, v3, etc.).
-
-YOUR TASK:
-Based on the full `chat_history`, write a natural, conversational `reply_text` to the user.
-Then, generate an `updated_plan_json` that reflects all their requests *from the entire conversation*.
+IMPORTANT:
+- DO NOT generate any flowcharts, plans, or step-by-step guides
+- DO NOT return any JSON structures or formal plans
+- ONLY have a conversational exchange to gather information
+- Keep responses natural and friendly
+- Your response should be ONLY the conversational text, nothing else
 
 OUTPUT FORMAT:
-You MUST respond in a pure, parsable JSON format. Do not write any other text.
-Your response MUST match this exact schema:
-
+Return ONLY a JSON object with this structure:
 {
-  "reply_text": "This is your natural, conversational response to the user's last message.",
+  "reply_text": "Your friendly, conversational response here"
+}
+"""
+
+FLOWCHART_SYSTEM_PROMPT = """
+You are "EventFlow," an expert event planning system that creates detailed, actionable event plans.
+
+YOUR TASK:
+Analyze the entire conversation history provided and create a comprehensive, step-by-step event plan (flowchart) based on ALL the information gathered.
+
+INFORMATION VALIDATION:
+Before creating the plan, verify that you have AT LEAST these essential details:
+1. Event type/description
+2. Approximate date or timeframe
+3. Guest count (even rough estimate)
+4. Budget range (even rough estimate)
+5. Basic venue preference or location type
+
+If ANY of these essential details are missing or unclear, you MUST return an error message instead of a plan.
+
+PLAN STRUCTURE:
+If sufficient information exists, create a detailed plan with:
+- **event_plan**: Array of steps, each containing:
+  - step: Sequential number
+  - task: Clear task name
+  - details: Comprehensive details about what needs to be done
+  - reasoning: Why this step is important and how it fits in the overall plan
+- **required_vendors**: List of vendors/services needed (be specific based on their requirements)
+- **suggestions**: Helpful suggestions, theme ideas, tips, or recommendations based on their event
+
+PLAN QUALITY:
+- Steps should be in logical order (vision → budget → venue → vendors → details → execution)
+- Be specific and actionable
+- Consider their budget, guest count, and preferences
+- Include realistic timelines if date is known
+- Prioritize based on what they emphasized as important
+
+OUTPUT FORMAT:
+Return a JSON object with this EXACT structure:
+
+If SUFFICIENT information:
+{
+  "reply_text": "Brief confirmation message",
   "updated_plan_json": {
     "event_plan": [
       {
         "step": 1,
-        "task": "Task Name (e.g., Finalize Budget)",
-        "details": "Details about this task...",
-        "reasoning": "Why this step is important."
+        "task": "Task name",
+        "details": "Detailed description",
+        "reasoning": "Why this matters"
       }
     ],
-    "required_vendors": [
-      "Caterer",
-      "DJ / Musician"
-    ],
-    "suggestions": "Suggestions you gave the user (e.g., theme ideas)."
+    "required_vendors": ["Vendor 1", "Vendor 2"],
+    "suggestions": "Your helpful suggestions here"
   }
 }
+
+If INSUFFICIENT information:
+{
+  "reply_text": "I don't have enough information yet to create a comprehensive event plan.",
+  "error": "Missing critical information. I still need: [list specific missing items like: event date/timeframe, guest count, budget range, etc.]. Please continue the conversation to provide these details."
+}
 """
+def convert_chat_history_to_gemini_format(chat_history: Dict[str, str]) -> List[Dict[str, Any]]:
+    messages = []
+    for key in sorted(chat_history.keys()):
+        role = "model" if key.startswith("ai") else "user"
+        text = chat_history[key]
+        
+        if text and text.strip(): 
+            messages.append({
+                "role": role,
+                "parts": [{"text": text}]
+            })
+    
+    return messages
 
-app = FastAPI()
+def validate_information_sufficiency(chat_history: Dict[str, str]) -> tuple[bool, List[str]]:
 
-async def get_llm_response(chat_history: List[ChatMessage], current_plan: str) -> Dict[str, Any]:
-    """
-    This is the main function that builds the prompt, calls the Gemini API,
-    and parses the response.
-    """
+    full_conversation = " ".join(chat_history.values()).lower()
+    missing_items = []
+    event_keywords = ["event", "party", "wedding", "birthday", "celebration", "anniversary", "corporate"]
+    if not any(keyword in full_conversation for keyword in event_keywords):
+        missing_items.append("event type/description")
+    date_keywords = ["date", "when", "month", "year", "day", "week", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+    if not any(keyword in full_conversation for keyword in date_keywords):
+        missing_items.append("event date or timeframe")
+    guest_keywords = ["guest", "people", "person", "attendee", "invite"]
+    numbers = any(char.isdigit() for char in full_conversation)
+    if not (any(keyword in full_conversation for keyword in guest_keywords) and numbers):
+        missing_items.append("guest count") 
+    budget_keywords = ["budget", "spend", "cost", "price", "dollar", "$", "money", "afford"]
+    if not any(keyword in full_conversation for keyword in budget_keywords):
+        missing_items.append("budget range")
+    venue_keywords = ["venue", "location", "place", "where", "home", "restaurant", "hall", "outdoor", "indoor"]
+    if not any(keyword in full_conversation for keyword in venue_keywords):
+        missing_items.append("venue preference")
+    is_sufficient = len(missing_items) <= 1
+    return is_sufficient, missing_items
+
+async def get_conversational_response(chat_history: Dict[str, str], current_text: str) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured on the server.")
-
-
-    history_json = json.dumps([msg.dict() for msg in chat_history], indent=2)
+    gemini_messages = convert_chat_history_to_gemini_format(chat_history)
+    gemini_messages.append({
+        "role": "user",
+        "parts": [{"text": current_text}]
+    })
     
-    user_prompt = f"""
-    Here is the data for your task:
-
-    <chat_history>
-    {history_json}
-    </chat_history>
-
-    <current_plan_json>
-    {current_plan}
-    </current_plan_json>
-
-    Please follow your instructions and provide a JSON response.
-    """
     payload = {
         "systemInstruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
+            "parts": [{"text": CONVERSATIONAL_SYSTEM_PROMPT}]
         },
-        "contents": [
-            # We add all previous messages
-            *(msg.dict() for msg in chat_history),
-            # And finally, we add our new user_prompt that contains the plan
-            {"role": "user", "parts": [{"text": user_prompt}]}
-        ],
+        "contents": gemini_messages,
         "generationConfig": {
             "responseMimeType": "application/json",
         }
     }
+    
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(API_URL, json=payload)
-            response.raise_for_status() 
+            response.raise_for_status()
             result = response.json()
             ai_json_response = result["candidates"][0]["content"]["parts"][0]["text"]
             final_data = json.loads(ai_json_response)
             return final_data
-
+    
     except httpx.HTTPStatusError as e:
         print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=f"Gemini API Error: {e.response.text}")
@@ -126,16 +192,61 @@ async def get_llm_response(chat_history: List[ChatMessage], current_plan: str) -
         print(f"An error occurred: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get or parse AI response: {str(e)}")
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat_with_agent(request: ChatRequest):
+async def get_flowchart_response(chat_history: Dict[str, str]) -> Dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured on the server.")
+    
+    is_sufficient, missing_items = validate_information_sufficiency(chat_history)
+    
+    gemini_messages = convert_chat_history_to_gemini_format(chat_history)
+    
+    summary_prompt = f"""
+    Based on the entire conversation history above, create a comprehensive event plan.
+    Conversation has been analyzed. Information sufficiency: {"SUFFICIENT" if is_sufficient else "INSUFFICIENT"}
+    {f"Missing items: {', '.join(missing_items)}" if not is_sufficient else ""}
+    
+    Please analyze all the details provided and generate the appropriate response.
+    """
+    gemini_messages.append({
+        "role": "user",
+        "parts": [{"text": summary_prompt}]
+    })
+    
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": FLOWCHART_SYSTEM_PROMPT}]
+        },
+        "contents": gemini_messages,
+        "generationConfig": {
+            "responseMimeType": "application/json",
+        }
+    }
+    
     try:
-        ai_data = await get_llm_response(request.chat_history, request.current_plan_json)
-        reply = ai_data.get("reply_text", "I'm sorry, I had trouble formulating a response.")
-        updated_plan = json.dumps(ai_data.get("updated_plan_json", {}))
-        return ChatResponse(
-            reply_text=reply,
-            updated_plan_json=updated_plan
-        )
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(API_URL, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            ai_json_response = result["candidates"][0]["content"]["parts"][0]["text"]
+            final_data = json.loads(ai_json_response)
+            return final_data
+    
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"Gemini API Error: {e.response.text}")
+    except (Exception, json.JSONDecodeError) as e:
+        print(f"An error occurred: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get or parse AI response: {str(e)}")
+    
+app = FastAPI(title="EventFlow API", version="2.0")
+
+@app.post("/chat", response_model=ConversationalResponse)
+async def chat_endpoint(request: ChatHistoryRequest):
+    try:
+        ai_data = await get_conversational_response(request.chat_history, request.current_text)
+        reply = ai_data.get("reply_text", "I'm here to help you plan your event! Could you tell me more about what you're planning?")
+        
+        return ConversationalResponse(reply_text=reply)
         
     except HTTPException as e:
         raise e
@@ -143,23 +254,64 @@ async def chat_with_agent(request: ChatRequest):
         print(f"Error in /chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+@app.post("/generate-flowchart", response_model=FlowchartResponse)
+async def generate_flowchart_endpoint(request: FlowchartRequest):
+    """
+    Generate a detailed event flowchart based on the entire conversation history.
+    
+    This endpoint analyzes all the information gathered during the conversation
+    and creates a comprehensive, step-by-step event plan.
+    
+    If insufficient information is available, it returns an error message
+    indicating what details are still needed.
+    """
+    try:
+        ai_data = await get_flowchart_response(request.chat_history)
+        
+        # Check if there's an error (insufficient information)
+        if "error" in ai_data and ai_data["error"]:
+            return FlowchartResponse(
+                updated_plan_json=None,
+                error=ai_data["error"]
+            )
+        if "updated_plan_json" in ai_data:
+            plan_json = json.dumps(ai_data["updated_plan_json"])
+            return FlowchartResponse(
+                updated_plan_json=plan_json,
+                error=None
+            )
+        return FlowchartResponse(
+            updated_plan_json=None,
+            error="Unable to generate flowchart. Please provide more details about your event."
+        )
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error in /generate-flowchart endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Welcome to EventFlow API v2.0",
+        "endpoints": {
+            "/chat": "POST - Conversational endpoint to gather event details",
+            "/generate-flowchart": "POST - Generate detailed event flowchart",
+            "/docs": "GET - Interactive API documentation"
+        }
+    }
+
 if __name__ == "__main__":
-    print("Starting EventFlow AI server...")
-    print("Find your API docs at http://127.0.0.1:8000/docs")
-    uvicorn.run("chatbot:app", host="127.0.0.1", port=8000, reload=True)
-
-#app.post  :
-#everytime whenever user make a post request here, user will send the whole previous data in the form of an object, like AI,user,AI,user...  to AI. So AI do not have to maintain the context and user information. AI wil only send me the response for the last text which will be sent by user.
-
-#app.post : 
-#user will send all the chat history.you will give me the flow chart accordingly.If the chat history is not sufficient, then send a message in response in error.
-
-
-# {
-#   "chat_history": 
-#     {
-#       "ai": "give the description",
-#       "user": "this is the description",
-#       "ai": "this is the response".
-#     }
-#   "current_text": "i am doing an event."
+    print("=" * 60)
+    print("Starting EventFlow API v2.0...")
+    print("=" * 60)
+    print("Server: http://127.0.0.1:8000")
+    print("API Docs: http://127.0.0.1:8000/docs")
+    print("=" * 60)
+    print("\nEndpoints:")
+    print("POST /chat - Conversational event planning")
+    print("POST /generate-flowchart - Generate event flowchart")
+    print("=" * 60)
+    uvicorn.run("eventflow_api:app", host="127.0.0.1", port=8000, reload=True)
