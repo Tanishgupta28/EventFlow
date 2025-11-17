@@ -245,7 +245,7 @@ async def chat_endpoint(request: ChatHistoryRequest):
         print(f"Error in /chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-@app.post("/flowchart", response_model=FlowchartResponse)
+@app.post("/generate-flowchart", response_model=FlowchartResponse)
 async def generate_flowchart_endpoint(request: FlowchartRequest):
     """
     Generate a detailed event flowchart based on the entire conversation history.
